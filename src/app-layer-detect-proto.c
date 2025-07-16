@@ -156,7 +156,7 @@ typedef struct AppLayerProtoDetectCtx_ {
      * for protocol detection.  This table is independent of the
      * ipproto. It should be allocated to contain ALPROTO_MAX
      * protocols. */
-    const char **alproto_names;
+    const char **alproto_names; //存储每个协议对应的名称
     size_t alproto_names_len;
 
     /* Protocol expectations, like ftp-data on tcp.
@@ -963,6 +963,7 @@ static void AppLayerProtoDetectProbingParserPortAppend(AppLayerProtoDetectProbin
     SCReturn;
 }
 
+//pp:协议识别解析器链表的二级指针
 static void AppLayerProtoDetectInsertNewProbingParser(AppLayerProtoDetectProbingParser **pp,
         uint8_t ipproto, bool use_ports, uint16_t port, AppProto alproto, uint16_t min_depth,
         uint16_t max_depth, uint8_t direction, ProbingParserFPtr ProbingParser1,
@@ -1335,6 +1336,16 @@ static int AppLayerProtoDetectPMAddSignature(AppLayerProtoDetectPMCtx *ctx, Dete
     SCReturnInt(0);
 }
 
+//ipproto: IP协议类型（TCP/UDP等）
+//alproto: 应用层协议类型（HTTP/TLS等）
+//pattern: 协议识别的特征模式字符串
+//depth: 检测深度
+//offset: 检测偏移量
+//direction: 方向（客户端到服务器/服务器到客户端）
+//is_cs: 是否区分大小写
+//PPFunc: 协议探测函数指针
+//pp_min_depth: 探测器最小深度
+//pp_max_depth: 探测器最大深度
 static int AppLayerProtoDetectPMRegisterPattern(uint8_t ipproto, AppProto alproto,
                                                 const char *pattern,
                                                 uint16_t depth, uint16_t offset,
@@ -1345,29 +1356,37 @@ static int AppLayerProtoDetectPMRegisterPattern(uint8_t ipproto, AppProto alprot
 {
     SCEnter();
 
+    //获取IP协议类型对应的协议识别上下文，分为TCP/UDP/ICMP/Default为基础协议的上下文
     AppLayerProtoDetectCtxIpproto *ctx_ipp = &alpd_ctx.ctx_ipp[FlowGetProtoMapping(ipproto)];
+    //模式匹配上下文
     AppLayerProtoDetectPMCtx *ctx_pm = NULL;
     int ret = 0;
 
+    //解析带引号的内容，解析失败则跳转到错误处理
     DetectContentData *cd = DetectContentParseEncloseQuotes(
             alpd_ctx.spm_global_thread_ctx, pattern);
     if (cd == NULL)
         goto error;
     cd->depth = depth;
     cd->offset = offset;
+    //如果模式不区分大小写，销毁
     if (!is_cs) {
-        /* Rebuild as nocase */
+        /* 销毁原有的模式匹配上下文 */
         SpmDestroyCtx(cd->spm_ctx);
+        //重新初始化模式匹配上下文(不区分大小写)
         cd->spm_ctx = SpmInitCtx(cd->content, cd->content_len, 1,
                                  alpd_ctx.spm_global_thread_ctx);
+        //如果初始化失败，跳转到错误处理
         if (cd->spm_ctx == NULL) {
             goto error;
         }
         cd->flags |= DETECT_CONTENT_NOCASE;
     }
+    //如果内容长度大于识别深度，跳转到错误处理
     if (depth < cd->content_len)
         goto error;
 
+    //根据方向选择模式匹配上下文
     if (direction & STREAM_TOSERVER)
         ctx_pm = (AppLayerProtoDetectPMCtx *)&ctx_ipp->ctx_pm[0];
     else
@@ -1379,6 +1398,7 @@ static int AppLayerProtoDetectPMRegisterPattern(uint8_t ipproto, AppProto alprot
         ctx_pm->min_len = depth;
 
     /* Finally turn it into a signature and add to the ctx. */
+    /* 将解析的内容转换为协议识别签名，并添加到模式匹配上下文中 */
     AppLayerProtoDetectPMAddSignature(ctx_pm, cd, alproto, direction,
             PPFunc, pp_min_depth, pp_max_depth);
 
@@ -1401,6 +1421,7 @@ AppProto AppLayerProtoDetectGetProto(AppLayerProtoDetectThreadCtx *tctx, Flow *f
 
     AppProto alproto = ALPROTO_UNKNOWN;
 
+    //模式匹配是否完成
     if (!FLOW_IS_PM_DONE(f, flags)) {
         AppProto pm_results[g_alproto_max];
         uint16_t pm_matches = AppLayerProtoDetectPMGetProto(
@@ -1421,6 +1442,7 @@ AppProto AppLayerProtoDetectGetProto(AppLayerProtoDetectThreadCtx *tctx, Flow *f
         }
     }
 
+    //探测器模式是否完成
     if (!FLOW_IS_PP_DONE(f, flags)) {
         DEBUG_VALIDATE_BUG_ON(*reverse_flow);
         alproto = AppLayerProtoDetectPPGetProto(f, buf, buflen, ipproto, flags, reverse_flow);
@@ -1430,6 +1452,7 @@ AppProto AppLayerProtoDetectGetProto(AppLayerProtoDetectThreadCtx *tctx, Flow *f
     }
 
     /* Look if flow can be found in expectation list */
+    //协议期望模式是否完成
     if (!FLOW_IS_PE_DONE(f, flags)) {
         DEBUG_VALIDATE_BUG_ON(*reverse_flow);
         alproto = AppLayerProtoDetectPEGetProto(f, flags);
@@ -1524,27 +1547,40 @@ int AppLayerProtoDetectPrepareState(void)
  *
  *  \param direction STREAM_TOSERVER or STREAM_TOCLIENT for dp or sp
  */
+//ipproto: IP协议类型（TCP/UDP等）
+//portstr: 端口号字符串(如"80,443"或"80-90")
+//alproto: 应用层协议类型（HTTP/TLS等）
+//min_depth: 最小检测深度
+//max_depth: 最大检测深度
+//direction: 方向（客户端到服务器/服务器到客户端）
+//ProbingParser1: 主协议探测器函数指针
+//ProbingParser2: 备用协议探测器函数指针
+//单个端口注册，端口范围注册，多个端口注册
 void SCAppLayerProtoDetectPPRegister(uint8_t ipproto, const char *portstr, AppProto alproto,
         uint16_t min_depth, uint16_t max_depth, uint8_t direction, ProbingParserFPtr ProbingParser1,
         ProbingParserFPtr ProbingParser2)
 {
     SCEnter();
 
-    DetectPort *head = NULL;
+    DetectPort *head = NULL; //端口链表的头指针
     if (portstr == NULL) {
+        // WebSocket没有固定关口，端口设置为0，use_ports设置为false，直接插入协议探测器
         // WebSocket has a probing parser, but no port
         // as it works only on HTTP1 protocol upgrade
         AppLayerProtoDetectInsertNewProbingParser(&alpd_ctx.ctx_pp, ipproto, false, 0, alproto,
                 min_depth, max_depth, direction, ProbingParser1, ProbingParser2);
         return;
     }
+    //解析端口字符串，生成端口链表
     DetectPortParse(NULL,&head, portstr);
     DetectPort *temp_dp = head;
+    //遍历端口链表，循环处理每个端口范围
     while (temp_dp != NULL) {
         uint16_t port = temp_dp->port;
         if (port == 0 && temp_dp->port2 != 0)
             port++;
         for (;;) {
+            //为每个端口插入新的协议探测器
             AppLayerProtoDetectInsertNewProbingParser(&alpd_ctx.ctx_pp, ipproto, true, port,
                     alproto, min_depth, max_depth, direction, ProbingParser1, ProbingParser2);
             if (port == temp_dp->port2) {
@@ -1553,7 +1589,7 @@ void SCAppLayerProtoDetectPPRegister(uint8_t ipproto, const char *portstr, AppPr
                 port++;
             }
         }
-        temp_dp = temp_dp->next;
+        temp_dp = temp_dp->next;//移动到链表中的下一个节点
     }
     DetectPortCleanupList(NULL,head);
 

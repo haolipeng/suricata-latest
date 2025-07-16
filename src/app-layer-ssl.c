@@ -3192,9 +3192,12 @@ void RegisterSSLParsers(void)
     SC_ATOMIC_INIT(ssl_config.enable_ja3);
 
     /** SSLv2  and SSLv23*/
+    //检测基于tcp的tls协议识别功能是否启用
     if (SCAppLayerProtoDetectConfProtoDetectionEnabled("tcp", proto_name)) {
+        //注册协议识别的名称
         AppLayerProtoDetectRegisterProtocol(ALPROTO_TLS, proto_name);
 
+        //注册协议识别的模式
         if (SSLRegisterPatternsForProtocolDetection() < 0)
             return;
 
